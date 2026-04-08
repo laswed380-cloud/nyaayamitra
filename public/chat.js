@@ -60,6 +60,19 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
+  // AI Auto-Fill button — use Claude to intelligently fill form fields
+  const aiFillButton = event.target.closest('[data-form-ai-fill]');
+  if (aiFillButton) {
+    const formId = aiFillButton.dataset.formAiFill;
+    const cardEl = aiFillButton.closest('.form-card');
+    if (cardEl) {
+      aiFillButton.textContent = 'AI filling...';
+      aiFillButton.disabled = true;
+      aiAutoFillForm(formId, cardEl);
+    }
+    return;
+  }
+
   // Form fill button — expand inline form in place of the card
   const fillButton = event.target.closest('[data-form-fill]');
   if (fillButton) {
@@ -750,7 +763,8 @@ function renderFormCard(formData) {
       ` : ''}
 
       <div class="form-card-actions">
-        <button class="form-btn form-btn-fill" type="button" data-form-fill="${escapeHtml(formId)}">Fill Missing Fields</button>
+        <button class="form-btn form-btn-ai-fill" type="button" data-form-ai-fill="${escapeHtml(formId)}">AI Auto-Fill</button>
+        <button class="form-btn form-btn-fill" type="button" data-form-fill="${escapeHtml(formId)}">Manual Fill</button>
         <button class="form-btn form-btn-download" type="button" data-form-download="${escapeHtml(formId)}">Download Form</button>
       </div>
 
@@ -880,6 +894,85 @@ async function downloadForm(formId, formData) {
     }
   } catch (err) {
     alert(`Download failed: ${err.message}`);
+  }
+}
+
+async function aiAutoFillForm(formId, cardEl) {
+  try {
+    // Build conversation context from chat history
+    const conversationContext = (state.conversation || [])
+      .map((turn) => {
+        if (turn.role === 'user') return `User: ${turn.message || ''}`;
+        if (turn.role === 'assistant') return `Assistant: ${(turn.reply || '').slice(0, 500)}`;
+        return '';
+      })
+      .filter(Boolean)
+      .slice(-6)
+      .join('\n');
+
+    // Collect profile from the latest conversation state
+    const profile = {};
+    for (const turn of state.conversation || []) {
+      if (turn.collectedProfile) Object.assign(profile, turn.collectedProfile);
+    }
+
+    // Get any existing filled data
+    const existingFormData = findFormDataInConversation(formId) || {};
+    const existingValues = {};
+    if (existingFormData.sections) {
+      for (const section of existingFormData.sections) {
+        for (const field of section.fields || []) {
+          if (field.value != null && field.value !== '') {
+            existingValues[field.id] = field.value;
+          }
+        }
+      }
+    }
+
+    const response = await fetch('/api/forms/ai-fill', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        formId,
+        profile,
+        formData: existingValues,
+        conversationContext,
+        userMessage: (state.conversation || []).filter((t) => t.role === 'user').pop()?.message || ''
+      })
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error?.message || 'AI fill failed');
+    }
+
+    const { result } = await response.json();
+
+    // Now download the AI-filled form immediately
+    const filledData = result.filledData || {};
+    downloadForm(formId, { formData: filledData });
+
+    // Update the card to show completion
+    if (cardEl) {
+      const pctEl = cardEl.querySelector('.form-card-progress-pct');
+      if (pctEl) pctEl.textContent = result.completionPercent + '%';
+      const fillEl = cardEl.querySelector('.form-card-progress-fill');
+      if (fillEl) fillEl.style.width = result.completionPercent + '%';
+      const labelEl = cardEl.querySelector('.form-card-progress-label span');
+      if (labelEl) labelEl.textContent = `${result.filledCount} of ${result.totalFields} fields filled by AI`;
+      const aiBtn = cardEl.querySelector('[data-form-ai-fill]');
+      if (aiBtn) {
+        aiBtn.textContent = `AI Filled (${result.completionPercent}%)`;
+        aiBtn.disabled = false;
+      }
+    }
+  } catch (err) {
+    alert(`AI auto-fill failed: ${err.message}`);
+    const aiBtn = cardEl?.querySelector('[data-form-ai-fill]');
+    if (aiBtn) {
+      aiBtn.textContent = 'AI Auto-Fill';
+      aiBtn.disabled = false;
+    }
   }
 }
 

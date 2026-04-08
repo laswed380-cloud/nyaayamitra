@@ -309,6 +309,110 @@ async function handleApi(req, res) {
       return;
     }
 
+    if (req.method === 'POST' && routePath === '/api/forms/ai-fill') {
+      const body = await readJsonBody(req);
+      const { getFormTemplate } = require('./domain/formEngine');
+      const form = getFormTemplate(body.formId);
+      if (!form || form.error) return sendError(res, 404, 'Form not found.');
+
+      const fieldList = [];
+      (form.sections || []).forEach((section) => {
+        (section.fields || []).forEach((field) => {
+          fieldList.push({
+            id: field.id,
+            label: field.label,
+            type: field.type,
+            options: field.options || null,
+            required: field.required,
+            helpText: field.helpText || '',
+            validation: field.validation || null
+          });
+        });
+      });
+
+      const existingData = body.formData || {};
+      const alreadyFilled = Object.entries(existingData).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join('\n');
+
+      const prompt = [
+        `You are filling out the Indian government form: "${form.name}" (${form.authority}).`,
+        `Portal: ${form.portalUrl}`,
+        '',
+        'BUSINESS CONTEXT PROVIDED BY USER:',
+        JSON.stringify(body.profile || {}, null, 2),
+        '',
+        body.conversationContext ? `CONVERSATION HISTORY:\n${body.conversationContext}` : '',
+        body.userMessage ? `USER'S LATEST MESSAGE:\n${body.userMessage}` : '',
+        '',
+        alreadyFilled ? `ALREADY FILLED FIELDS:\n${alreadyFilled}` : '',
+        '',
+        'FORM FIELDS TO FILL:',
+        JSON.stringify(fieldList, null, 2),
+        '',
+        'INSTRUCTIONS:',
+        '1. Return ONLY a valid JSON object mapping field IDs to their values.',
+        '2. Fill EVERY field you can reasonably determine from the context.',
+        '3. For select/radio fields, use EXACTLY one of the provided options.',
+        '4. For dates, use YYYY-MM-DD format.',
+        '5. For PAN, use valid format: ABCDE1234F (use placeholder XXXXX0000X if unknown).',
+        '6. If a field has a validation pattern (pan, email, phone, pin, cin, gstin, din), ensure the value matches.',
+        '7. Leave fields as empty string "" ONLY if you truly cannot determine or infer the value.',
+        '8. Be intelligent — infer state from city, entity type from context, NIC code from business description.',
+        '9. For company names, add "Private Limited" suffix if entity type is Private Limited Company.',
+        '10. Default nationality to "Indian" unless context says otherwise.',
+        '11. Use today\'s date (' + new Date().toISOString().slice(0, 10) + ') for filing/consent dates.',
+        '12. For business descriptions, write a proper 2-3 sentence description based on the context.',
+        '',
+        'Return ONLY the JSON object. No explanation, no markdown, no code fences.'
+      ].filter(Boolean).join('\n');
+
+      try {
+        const aiResult = await askAnthropic({
+          prompt,
+          maxTokens: 4096,
+          temperature: 0.1
+        });
+
+        let filledData = {};
+        try {
+          const text = (aiResult.text || '').trim();
+          const jsonMatch = text.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            filledData = JSON.parse(jsonMatch[0]);
+          }
+        } catch (_parseError) {
+          filledData = {};
+        }
+
+        // Merge: keep existing user data, add AI-filled data for empty fields
+        const merged = { ...filledData, ...existingData };
+        // Remove empty strings from AI that user already filled
+        for (const [key, val] of Object.entries(existingData)) {
+          if (val) merged[key] = val;
+        }
+
+        const filledCount = Object.values(merged).filter((v) => v && v !== '').length;
+        const totalFields = fieldList.length;
+
+        saveAnalysisActivity(body.matterId, 'AI Form Filler', `AI filled ${filledCount}/${totalFields} fields for ${form.name}`, { readinessScore: Math.round((filledCount / totalFields) * 100) });
+
+        return sendJson(res, 200, {
+          result: {
+            formId: body.formId,
+            formName: form.name,
+            filledData: merged,
+            filledCount,
+            totalFields,
+            completionPercent: Math.round((filledCount / totalFields) * 100),
+            portalUrl: form.portalUrl,
+            authority: form.authority,
+            aiPowered: true
+          }
+        });
+      } catch (error) {
+        return sendError(res, 500, 'AI form filling failed.', error.message);
+      }
+    }
+
     return sendError(res, 404, 'API route not found.');
   } catch (error) {
     return sendError(res, 500, 'API request failed.', error.message);

@@ -115,17 +115,35 @@ function executeAction(action) {
     case 'form-filler': {
       const workflow = prefill.workflow || '';
       const requestedForms = prefill.requestedForms || [];
-      let forms;
-      if (workflow) {
-        forms = getFormsForWorkflow(workflow);
-      } else if (requestedForms.length) {
-        forms = requestedForms.map((id) => getFormTemplate(id)).filter(Boolean);
+      let formIds;
+      if (requestedForms.length) {
+        formIds = requestedForms;
+      } else if (workflow) {
+        const wf = getFormsForWorkflow(workflow);
+        formIds = (wf.forms || []).map((f) => f.id);
       } else {
-        forms = getFormsForWorkflow('full-launch');
+        const wf = getFormsForWorkflow('full-launch');
+        formIds = (wf.forms || []).map((f) => f.id);
       }
-      const filledForms = forms.map((f) => prefillForm(f.id || f.formId, prefill));
-      const packageResult = generateFormPackage(filledForms, prefill);
-      return { kind: 'form-package', data: packageResult };
+      // Pre-fill the first form (most relevant) with profile data
+      const primaryId = formIds[0] || 'spice-plus-a';
+      const prefilled = prefillForm(primaryId, prefill);
+      const allForms = formIds.map((id) => {
+        const tpl = getFormTemplate(id);
+        return tpl && !tpl.error ? { id: tpl.id, name: tpl.name, authority: tpl.authority, portalUrl: tpl.portalUrl, fees: tpl.fees, timeline: tpl.timeline } : null;
+      }).filter(Boolean);
+      return {
+        kind: 'form-package',
+        data: {
+          primaryForm: prefilled,
+          allForms,
+          workflow: workflow || 'custom',
+          totalForms: allForms.length,
+          formId: primaryId,
+          portalUrl: prefilled.portalUrl || '',
+          readyForAiFill: true
+        }
+      };
     }
     default:
       return null;
@@ -218,7 +236,10 @@ function buildIntelligentPrompt(context) {
         return `LAUNCH AUTOPILOT:\nSummary: ${data.summary || 'N/A'}\nWorkstreams (${(data.workstreams || []).length}): ${JSON.stringify((data.workstreams || []).map(w => w.title))}\nBlockers: ${JSON.stringify(data.blockers || [])}`;
       }
       if (kind === 'form-package') {
-        return `FORM PACKAGE PREPARED:\nForms: ${JSON.stringify(data.forms?.map(f => f.name))}\nFilled fields: ${data.filledCount}\nMissing fields: ${JSON.stringify(data.missingFields)}\nReady to submit: ${data.readyToSubmit}`;
+        const primary = data.primaryForm || {};
+        const allNames = (data.allForms || []).map(f => f.name);
+        const summary = primary.prefillSummary || {};
+        return `FORM PACKAGE PREPARED:\nPrimary form: ${primary.name || data.formId}\nAll forms in sequence: ${JSON.stringify(allNames)}\nTotal forms: ${data.totalForms}\nFields pre-filled from profile: ${summary.filledFromProfile || 0}\nTotal fields: ${summary.totalFields || '?'}\nProfile completeness: ${summary.profileCompleteness || '?'}\n\nIMPORTANT: The form engine has prepared downloadable form templates. Tell the user what forms are ready, what information is still needed to fill them completely, and that they can click "Fill Form" on the form cards below to enter missing details. Then they can download the filled form as a print-ready document or use it as a reference when filling the portal. Ask for any missing critical details like director names, PAN, address etc. so AI can fill them accurately.`;
       }
       return '';
     }).filter(Boolean);
@@ -234,6 +255,19 @@ function buildIntelligentPrompt(context) {
     sections.push(`INFORMATION GAPS (ask naturally if relevant):\n${missing}`);
   }
 
+  // Form request context
+  const hasFormRequest = toolResults.some((item) => item?.kind === 'form-package');
+  const formInstructions = hasFormRequest ? `
+11. FORM FILLING: The system has prepared government forms for the user. Explain which forms are ready and what data is still needed. Ask for missing details like:
+    - Director full names (as on PAN card), dates of birth, PAN numbers
+    - Registered office full address with PIN code
+    - Authorized share capital and paid-up capital amounts
+    - Business activity description and NIC code
+    - Bank account details for GST/EPFO registration
+    - Mobile numbers and email addresses (unique per director for DIN)
+    Tell the user they can click "Fill Form" on any form card to enter details, then "Download" to get a print-ready copy or use it as reference on the government portal. Be proactive — if you can infer any field values from the conversation, mention what you've already filled.
+12. When the user provides details (names, PAN, address, etc.), acknowledge what you received and explain which form fields those fill. Guide them through remaining gaps.` : '';
+
   // Instructions for the AI
   sections.push(`INSTRUCTIONS:
 Respond directly to the user's message. Use the collected profile and analysis data above to give specific, actionable advice.
@@ -248,7 +282,7 @@ Rules:
 7. Be warm, direct, and authoritative — like a trusted advisor who knows Indian compliance deeply.
 8. Keep the response focused. Don't dump everything at once. Prioritize what's most urgent or relevant to what the user asked.
 9. NEVER say things like "I've analyzed your situation and here's what I found" — just give the advice directly.
-10. When mentioning government portals, always include the actual URL.`);
+10. When mentioning government portals, always include the actual URL.${formInstructions}`);
 
   return sections.join('\n\n');
 }
