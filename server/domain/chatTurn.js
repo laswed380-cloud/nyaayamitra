@@ -11,6 +11,7 @@ const { buildGovernmentLookupPlan } = require('./governmentLookup');
 const { buildEntityIdentifierSnapshot, runBusinessAutopilot } = require('./businessAdvisors');
 const { buildComplianceManagerPlan, buildLibraryPayload } = require('./sectorCompliance');
 const { buildSubmissionPacket } = require('./submissionDesk');
+const { getFormsForWorkflow, getFormTemplate, prefillForm, generateFormPackage } = require('./formEngine');
 const { askAnthropic, getAiStatus } = require('../services/anthropic');
 
 async function buildChatTurn(input = {}, store) {
@@ -72,6 +73,10 @@ function selectAutoRunActions(context) {
     actions.push(byView.get('compliance-manager'));
   }
 
+  if (byView.has('form-filler') && /\b(fill form|fill the form|do it for me|submit for me|prepare my forms|generate form|download form|create application|spice|inc[- ]?32|gst\s*reg|fssai form|dir[- ]?3)\b/.test(lower)) {
+    actions.push(byView.get('form-filler'));
+  }
+
   if (byView.has('submissions') && explicitSubmission && (hasBusinessType || /\b(gst|fssai|foscos)\b/.test(lower))) {
     actions.push(byView.get('submissions'));
   }
@@ -107,6 +112,21 @@ function executeAction(action) {
       return { kind: 'launch', data: runBusinessAutopilot(prefill) };
     case 'library':
       return { kind: 'library', data: buildLibraryPayload() };
+    case 'form-filler': {
+      const workflow = prefill.workflow || '';
+      const requestedForms = prefill.requestedForms || [];
+      let forms;
+      if (workflow) {
+        forms = getFormsForWorkflow(workflow);
+      } else if (requestedForms.length) {
+        forms = requestedForms.map((id) => getFormTemplate(id)).filter(Boolean);
+      } else {
+        forms = getFormsForWorkflow('full-launch');
+      }
+      const filledForms = forms.map((f) => prefillForm(f.id || f.formId, prefill));
+      const packageResult = generateFormPackage(filledForms, prefill);
+      return { kind: 'form-package', data: packageResult };
+    }
     default:
       return null;
   }
@@ -196,6 +216,9 @@ function buildIntelligentPrompt(context) {
       }
       if (kind === 'launch') {
         return `LAUNCH AUTOPILOT:\nSummary: ${data.summary || 'N/A'}\nWorkstreams (${(data.workstreams || []).length}): ${JSON.stringify((data.workstreams || []).map(w => w.title))}\nBlockers: ${JSON.stringify(data.blockers || [])}`;
+      }
+      if (kind === 'form-package') {
+        return `FORM PACKAGE PREPARED:\nForms: ${JSON.stringify(data.forms?.map(f => f.name))}\nFilled fields: ${data.filledCount}\nMissing fields: ${JSON.stringify(data.missingFields)}\nReady to submit: ${data.readyToSubmit}`;
       }
       return '';
     }).filter(Boolean);

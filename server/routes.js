@@ -263,6 +263,52 @@ async function handleApi(req, res) {
       return sendJson(res, 201, { export: exportRecord });
     }
 
+    // ─── Form Engine Routes ────────────────────────────────────
+
+    if (req.method === 'GET' && routePath === '/api/forms') {
+      const { listForms } = require('./domain/formEngine');
+      return sendJson(res, 200, { forms: listForms() });
+    }
+
+    if (req.method === 'GET' && routePath.startsWith('/api/forms/')) {
+      const formId = decodeURIComponent(routePath.split('/').pop());
+      const { getFormTemplate } = require('./domain/formEngine');
+      const form = getFormTemplate(formId);
+      if (!form) return sendError(res, 404, 'Form not found.');
+      return sendJson(res, 200, { form });
+    }
+
+    if (req.method === 'POST' && routePath === '/api/forms/prefill') {
+      const body = await readJsonBody(req);
+      const { prefillForm } = require('./domain/formEngine');
+      const result = prefillForm(body.formId, body.profile || {});
+      return sendJson(res, 200, { result });
+    }
+
+    if (req.method === 'POST' && routePath === '/api/forms/generate') {
+      const body = await readJsonBody(req);
+      const { generateFormPackage } = require('./domain/formEngine');
+      const result = generateFormPackage(body.formId, body.formData || {});
+      saveAnalysisActivity(body.matterId, 'Form engine', `Form generated: ${body.formId}`, result);
+      return sendJson(res, 200, { result });
+    }
+
+    if (req.method === 'POST' && routePath === '/api/forms/workflow') {
+      const body = await readJsonBody(req);
+      const { getFormsForWorkflow } = require('./domain/formEngine');
+      const result = getFormsForWorkflow(body.workflow);
+      return sendJson(res, 200, { result });
+    }
+
+    if (req.method === 'POST' && routePath === '/api/forms/render') {
+      const body = await readJsonBody(req);
+      const { renderFormHtml } = require('./domain/formEngine');
+      const html = renderFormHtml(body.formId, body.formData || {});
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+      return;
+    }
+
     return sendError(res, 404, 'API route not found.');
   } catch (error) {
     return sendError(res, 500, 'API request failed.', error.message);

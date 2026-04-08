@@ -32,6 +32,10 @@ function buildChatConciergeResponse(input = {}) {
   const servesAlcohol = detectAlcoholSignal(lower, priorProfile);
   const identifierMetadata = detectIdentifierMetadata(identifier?.type, identifier?.value);
 
+  const formRequest = signals.includes('formRequest');
+  const requestedForms = detectRequestedForms(lower);
+  const workflow = detectFormWorkflow(lower, signals);
+
   const collectedProfile = {
     businessName: companyName,
     businessType: sector ? sector.name : priorProfile.businessType,
@@ -45,7 +49,10 @@ function buildChatConciergeResponse(input = {}) {
     identifierType: identifier?.type || priorProfile.identifierType,
     identifierValue: identifier?.value || priorProfile.identifierValue,
     incorporationYear: identifierMetadata.incorporationYear || priorProfile.incorporationYear,
-    listingStatus: identifierMetadata.listingStatus || priorProfile.listingStatus
+    listingStatus: identifierMetadata.listingStatus || priorProfile.listingStatus,
+    formRequest,
+    requestedForms: requestedForms.length ? requestedForms : (priorProfile.requestedForms || []),
+    workflow: workflow || priorProfile.workflow || ''
   };
 
   const clarificationPrompts = buildClarificationPrompts({
@@ -116,6 +123,14 @@ function buildActions(context) {
     context.sector
   ) {
     actions.push(action('compliance-manager', prefill));
+  }
+
+  if (context.signals.includes('formRequest')) {
+    actions.push(action('form-filler', {
+      ...prefill,
+      requestedForms: context.collectedProfile.requestedForms || [],
+      workflow: context.collectedProfile.workflow || ''
+    }));
   }
 
   if (context.signals.includes('incorporation') || context.signals.includes('director')) {
@@ -271,10 +286,12 @@ function detectSignals(lower) {
   if (/(fire|fire noc|fire safety|fire department)/.test(lower)) signals.push('fire');
   if (/(posh|sexual harassment|icc|internal complaints)/.test(lower)) signals.push('posh');
   if (/(dpdp|data protection|privacy|personal data)/.test(lower)) signals.push('data-protection');
+  if (/(fill form|fill the form|do it for me|submit for me|prepare my forms|generate form|download form|create application|spice\+?|inc[- ]?32|gst\s*reg[- ]?01|fssai form|dir[- ]?3|inc[- ]?20|mgt[- ]?14|aoc[- ]?4|adt[- ]?1|msme[- ]?form|udyam[- ]?form)/.test(lower)) signals.push('formRequest');
   return signals;
 }
 
 function shouldAutoRun(context) {
+  if (context.signals.includes('formRequest')) return true;
   if (context.signals.includes('submission')) return true;
   if (context.signals.includes('gst') || context.signals.includes('fssai')) return true;
   if (context.collectedProfile.identifierValue) return true;
@@ -441,6 +458,31 @@ function detectAlcoholSignal(lower, profile) {
 function detectBusinessName(message) {
   const explicit = String(message || '').match(/(?:company|business|restaurant|firm|entity|brand)\s+(?:name|called|named)\s+(?:is|:)?\s*([A-Z][A-Za-z0-9& .'-]{2,})/i);
   if (explicit) return explicit[1].trim();
+  return '';
+}
+
+// ─── Form Detection Helpers ─────────────────────────────────
+
+function detectRequestedForms(lower) {
+  const forms = [];
+  if (/spice\+?/.test(lower)) forms.push('spice-plus');
+  if (/inc[- ]?32/.test(lower)) forms.push('inc-32');
+  if (/inc[- ]?20/.test(lower)) forms.push('inc-20');
+  if (/gst\s*reg[- ]?01/.test(lower)) forms.push('gst-reg-01');
+  if (/fssai form|foscos/.test(lower)) forms.push('fssai-license');
+  if (/dir[- ]?3/.test(lower)) forms.push('dir-3-kyc');
+  if (/mgt[- ]?14/.test(lower)) forms.push('mgt-14');
+  if (/aoc[- ]?4/.test(lower)) forms.push('aoc-4');
+  if (/adt[- ]?1/.test(lower)) forms.push('adt-1');
+  if (/msme[- ]?form|udyam[- ]?form|udyam registration/.test(lower)) forms.push('udyam-registration');
+  return forms;
+}
+
+function detectFormWorkflow(lower, signals) {
+  if (/full launch|complete setup|all forms|everything i need|end[- ]?to[- ]?end/.test(lower)) return 'full-launch';
+  if (signals.includes('incorporation') || /incorporat|spice|company formation|new company/.test(lower)) return 'incorporation';
+  if (signals.includes('gst') || /gst registration|gst reg/.test(lower)) return 'gst-registration';
+  if (signals.includes('fssai') || /fssai|food license|food licence/.test(lower)) return 'fssai-license';
   return '';
 }
 

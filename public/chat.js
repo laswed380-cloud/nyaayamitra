@@ -57,6 +57,84 @@ document.addEventListener('click', async (event) => {
     const index = Number(removeButton.dataset.removeAttachment);
     state.pendingAttachments.splice(index, 1);
     render();
+    return;
+  }
+
+  // Form fill button — expand inline form in place of the card
+  const fillButton = event.target.closest('[data-form-fill]');
+  if (fillButton) {
+    const formId = fillButton.dataset.formFill;
+    const cardEl = fillButton.closest('.form-card');
+    if (cardEl) {
+      const formData = findFormDataInConversation(formId);
+      if (formData) {
+        cardEl.outerHTML = renderInlineForm(formData);
+      }
+    }
+    return;
+  }
+
+  // Form download button
+  const dlButton = event.target.closest('[data-form-download]');
+  if (dlButton) {
+    const formId = dlButton.dataset.formDownload;
+    const formData = findFormDataInConversation(formId);
+    downloadForm(formId, formData || {});
+    return;
+  }
+
+  // Inline form generate & download
+  const genButton = event.target.closest('[data-form-generate]');
+  if (genButton) {
+    const formId = genButton.dataset.formGenerate;
+    const collected = collectInlineFormData(formId);
+    const baseData = findFormDataInConversation(formId) || {};
+    downloadForm(formId, { ...baseData, filledValues: collected });
+    return;
+  }
+
+  // Inline form cancel — re-render the card
+  const cancelButton = event.target.closest('[data-form-cancel]');
+  if (cancelButton) {
+    const formId = cancelButton.dataset.formCancel;
+    const inlineEl = cancelButton.closest('.inline-form');
+    if (inlineEl) {
+      const formData = findFormDataInConversation(formId);
+      if (formData) {
+        inlineEl.outerHTML = renderFormCard(formData);
+      }
+    }
+    return;
+  }
+
+  // Workflow step expand
+  const expandButton = event.target.closest('[data-workflow-expand]');
+  if (expandButton) {
+    const formId = expandButton.dataset.workflowExpand;
+    const stepEl = expandButton.closest('.workflow-step, .workflow-step-active, .workflow-step-complete');
+    if (stepEl) {
+      const formData = findFormDataInConversation(formId);
+      if (formData) {
+        const inlineHtml = renderInlineForm(formData);
+        stepEl.insertAdjacentHTML('afterend', `<div class="workflow-inline-wrapper" data-workflow-inline="${escapeHtml(formId)}">${inlineHtml}</div>`);
+        expandButton.textContent = 'Close';
+        expandButton.removeAttribute('data-workflow-expand');
+        expandButton.setAttribute('data-workflow-collapse', formId);
+      }
+    }
+    return;
+  }
+
+  // Workflow step collapse
+  const collapseButton = event.target.closest('[data-workflow-collapse]');
+  if (collapseButton) {
+    const formId = collapseButton.dataset.workflowCollapse;
+    const wrapper = document.querySelector(`[data-workflow-inline="${formId}"]`);
+    if (wrapper) wrapper.remove();
+    collapseButton.textContent = 'Open';
+    collapseButton.removeAttribute('data-workflow-collapse');
+    collapseButton.setAttribute('data-workflow-expand', formId);
+    return;
   }
 });
 
@@ -328,6 +406,14 @@ function buildVisual(toolResult) {
     };
   }
 
+  if (kind === 'form-package') {
+    return { kind, formData: data };
+  }
+
+  if (kind === 'form-workflow') {
+    return { kind, workflowData: data };
+  }
+
   return null;
 }
 
@@ -343,6 +429,16 @@ function extractSources(toolResults) {
     if (kind === 'entity-snapshot') collected.push(...normalizeSources((data.citations || []).slice(0, 5)));
     if (kind === 'launch') collected.push(...normalizeSources((data.citations || []).slice(0, 4)));
     if (kind === 'library') collected.push(...normalizeSources((data.sources || []).slice(0, 5)));
+    if (kind === 'form-package' && data.portalUrl) {
+      collected.push({
+        name: data.portalName || data.authority || 'Filing Portal',
+        url: data.portalUrl || '',
+        relevance: 'Portal for form filing',
+        lastVerified: '2026-04-08'
+      });
+    }
+    if (kind === 'form-package') collected.push(...normalizeSources((data.citations || []).slice(0, 4)));
+    if (kind === 'form-workflow') collected.push(...normalizeSources((data.citations || []).slice(0, 4)));
     if (kind === 'submissions' && data.portalUrl) {
       collected.push({
         name: data.portalName || 'Portal',
@@ -416,6 +512,9 @@ function renderMessage(message, messageIndex) {
 }
 
 function renderVisual(visual) {
+  if (visual.kind === 'form-package') return renderFormCard(visual.formData);
+  if (visual.kind === 'form-workflow') return renderWorkflowForms(visual.workflowData);
+
   return `
     <section class="visual-block">
       <div class="visual-header">
@@ -584,6 +683,283 @@ function escapeHtml(value) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
 }
+
+// ─── Form Package Rendering ─────────────────────────────────────────
+
+function renderFormCard(formData) {
+  const form = formData || {};
+  const formName = form.formName || form.name || 'Untitled Form';
+  const authority = form.authority || '';
+  const portalUrl = form.portalUrl || '';
+  const portalName = form.portalName || 'Filing Portal';
+  const sections = form.sections || [];
+  const documents = form.documents || form.documentsRequired || [];
+  const portalInstructions = form.portalInstructions || form.filingSteps || [];
+  const formId = form.formId || form.id || slugify(formName);
+
+  // Calculate field progress
+  let totalFields = 0;
+  let filledFields = 0;
+  const sectionSummaries = [];
+
+  for (const section of sections) {
+    const fields = section.fields || [];
+    const sectionTotal = fields.length;
+    const sectionFilled = fields.filter((f) => f.value != null && f.value !== '').length;
+    totalFields += sectionTotal;
+    filledFields += sectionFilled;
+    sectionSummaries.push({
+      name: section.name || section.title || 'Section',
+      total: sectionTotal,
+      filled: sectionFilled
+    });
+  }
+
+  const progressPercent = totalFields > 0 ? Math.round((filledFields / totalFields) * 100) : 0;
+
+  return `
+    <section class="form-card" data-form-id="${escapeHtml(formId)}">
+      <div class="form-card-header">
+        <div class="form-card-title-row">
+          <h3>${escapeHtml(formName)}</h3>
+          ${authority ? `<span class="form-card-authority">${escapeHtml(authority)}</span>` : ''}
+        </div>
+        ${portalUrl ? `<a class="form-btn form-btn-portal" href="${escapeHtml(portalUrl)}" target="_blank" rel="noreferrer">${escapeHtml(portalName)}</a>` : ''}
+      </div>
+
+      <div class="form-card-progress">
+        <div class="form-card-progress-label">
+          <span>${filledFields} of ${totalFields} fields filled</span>
+          <span class="form-card-progress-pct">${progressPercent}%</span>
+        </div>
+        <div class="form-card-progress-track">
+          <div class="form-card-progress-fill" style="width:${progressPercent}%"></div>
+        </div>
+      </div>
+
+      ${sectionSummaries.length ? `
+        <div class="form-card-sections">
+          ${sectionSummaries.map((s) => `
+            <div class="form-card-section-row">
+              <span class="form-card-section-icon ${s.filled === s.total && s.total > 0 ? 'filled' : 'missing'}">${s.filled === s.total && s.total > 0 ? '&#10003;' : '&#10007;'}</span>
+              <span class="form-card-section-name">${escapeHtml(s.name)}</span>
+              <span class="form-card-section-count">${s.filled}/${s.total}</span>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+
+      <div class="form-card-actions">
+        <button class="form-btn form-btn-fill" type="button" data-form-fill="${escapeHtml(formId)}">Fill Missing Fields</button>
+        <button class="form-btn form-btn-download" type="button" data-form-download="${escapeHtml(formId)}">Download Form</button>
+      </div>
+
+      ${portalInstructions.length ? `
+        <details class="form-card-portal-details">
+          <summary>Portal Instructions</summary>
+          <ol class="form-card-portal-steps">
+            ${portalInstructions.map((step) => `<li>${escapeHtml(typeof step === 'string' ? step : step.step || step.instruction || '')}</li>`).join('')}
+          </ol>
+        </details>
+      ` : ''}
+
+      ${documents.length ? `
+        <div class="doc-checklist">
+          <p class="doc-checklist-title">Required Documents</p>
+          ${documents.map((doc, i) => {
+            const docName = typeof doc === 'string' ? doc : doc.name || doc.document || '';
+            return `
+              <label class="doc-checklist-item">
+                <input type="checkbox" data-doc-check="${formId}-${i}">
+                <span>${escapeHtml(docName)}</span>
+              </label>
+            `;
+          }).join('')}
+        </div>
+      ` : ''}
+    </section>
+  `;
+}
+
+function renderInlineForm(form) {
+  const formData = form || {};
+  const sections = formData.sections || [];
+  const formId = formData.formId || formData.id || slugify(formData.formName || formData.name || 'form');
+
+  return `
+    <div class="inline-form" data-inline-form-id="${escapeHtml(formId)}">
+      <div class="inline-form-header">
+        <h4>${escapeHtml(formData.formName || formData.name || 'Fill Form')}</h4>
+      </div>
+      ${sections.map((section) => `
+        <fieldset class="form-section">
+          <legend>${escapeHtml(section.name || section.title || 'Section')}</legend>
+          ${(section.fields || []).map((field) => {
+            const fieldId = `${formId}-${slugify(field.name || field.label || 'field')}`;
+            const isRequired = field.required !== false;
+            const isFilled = field.value != null && field.value !== '';
+            const fieldType = field.type || 'text';
+            const fieldClasses = `form-field ${isFilled ? 'field-filled' : ''} ${isRequired && !isFilled ? 'field-missing' : ''}`;
+
+            let inputHtml = '';
+            if (fieldType === 'select' && Array.isArray(field.options)) {
+              inputHtml = `
+                <select id="${escapeHtml(fieldId)}" name="${escapeHtml(field.name || field.label || '')}" data-form-field="${escapeHtml(formId)}" ${isRequired ? 'required' : ''}>
+                  <option value="">-- Select --</option>
+                  ${field.options.map((opt) => {
+                    const optVal = typeof opt === 'string' ? opt : opt.value || '';
+                    const optLabel = typeof opt === 'string' ? opt : opt.label || opt.value || '';
+                    const selected = String(field.value) === String(optVal) ? 'selected' : '';
+                    return `<option value="${escapeHtml(optVal)}" ${selected}>${escapeHtml(optLabel)}</option>`;
+                  }).join('')}
+                </select>
+              `;
+            } else if (fieldType === 'textarea') {
+              inputHtml = `<textarea id="${escapeHtml(fieldId)}" name="${escapeHtml(field.name || field.label || '')}" data-form-field="${escapeHtml(formId)}" rows="3" ${isRequired ? 'required' : ''}>${escapeHtml(field.value || '')}</textarea>`;
+            } else if (fieldType === 'date') {
+              inputHtml = `<input type="date" id="${escapeHtml(fieldId)}" name="${escapeHtml(field.name || field.label || '')}" data-form-field="${escapeHtml(formId)}" value="${escapeHtml(field.value || '')}" ${isRequired ? 'required' : ''}>`;
+            } else if (fieldType === 'number') {
+              inputHtml = `<input type="number" id="${escapeHtml(fieldId)}" name="${escapeHtml(field.name || field.label || '')}" data-form-field="${escapeHtml(formId)}" value="${escapeHtml(field.value || '')}" ${isRequired ? 'required' : ''}>`;
+            } else {
+              inputHtml = `<input type="text" id="${escapeHtml(fieldId)}" name="${escapeHtml(field.name || field.label || '')}" data-form-field="${escapeHtml(formId)}" value="${escapeHtml(field.value || '')}" ${isRequired ? 'required' : ''}>`;
+            }
+
+            return `
+              <div class="${fieldClasses}">
+                <label for="${escapeHtml(fieldId)}">
+                  ${escapeHtml(field.label || field.name || 'Field')}
+                  ${isRequired ? '<span class="field-required">*</span>' : ''}
+                  ${isFilled ? '<span class="field-filled-badge">&#10003;</span>' : ''}
+                </label>
+                ${inputHtml}
+                ${field.help ? `<span class="field-help">${escapeHtml(field.help)}</span>` : ''}
+              </div>
+            `;
+          }).join('')}
+        </fieldset>
+      `).join('')}
+      <div class="inline-form-actions">
+        <button class="form-btn form-btn-download" type="button" data-form-generate="${escapeHtml(formId)}">Generate &amp; Download</button>
+        <button class="form-btn form-btn-cancel" type="button" data-form-cancel="${escapeHtml(formId)}">Cancel</button>
+      </div>
+    </div>
+  `;
+}
+
+async function downloadForm(formId, formData) {
+  try {
+    const response = await fetch('/api/forms/render', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ formId, ...formData })
+    });
+
+    if (!response.ok) {
+      const errPayload = await response.json().catch(() => ({}));
+      throw new Error(errPayload.error?.message || 'Form rendering failed');
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('text/html')) {
+      const html = await response.text();
+      const win = window.open('', '_blank');
+      if (win) {
+        win.document.write(html);
+        win.document.close();
+      }
+    } else {
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${formId || 'form'}.html`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+  } catch (err) {
+    alert(`Download failed: ${err.message}`);
+  }
+}
+
+function renderWorkflowForms(workflowData) {
+  const data = workflowData || {};
+  const forms = data.forms || data.steps || [];
+  const workflowTitle = data.title || data.name || 'Filing Workflow';
+
+  return `
+    <section class="workflow-forms">
+      <div class="workflow-header">
+        <h3>${escapeHtml(workflowTitle)}</h3>
+        ${data.description ? `<p>${escapeHtml(data.description)}</p>` : ''}
+      </div>
+      <div class="workflow-steps">
+        ${forms.map((form, index) => {
+          const status = form.status || 'not-started';
+          const stepClass = status === 'ready' || status === 'complete' ? 'workflow-step-complete' :
+                            status === 'in-progress' ? 'workflow-step-active' : 'workflow-step';
+          const statusIcon = status === 'ready' || status === 'complete' ? '&#10003;' :
+                             status === 'in-progress' ? '&#9679;' : `${index + 1}`;
+          const formId = form.formId || form.id || slugify(form.name || form.formName || `step-${index}`);
+          const deps = form.dependsOn || form.dependencies || [];
+
+          return `
+            ${index > 0 ? '<div class="workflow-connector"></div>' : ''}
+            <div class="${stepClass}" data-workflow-step="${escapeHtml(formId)}">
+              <div class="workflow-step-marker">${statusIcon}</div>
+              <div class="workflow-step-body">
+                <div class="workflow-step-title">${escapeHtml(form.name || form.formName || `Step ${index + 1}`)}</div>
+                ${form.authority ? `<span class="workflow-step-authority">${escapeHtml(form.authority)}</span>` : ''}
+                ${deps.length ? `<span class="workflow-step-deps">Requires: ${deps.map((d) => escapeHtml(typeof d === 'string' ? d : d.name || '')).join(', ')}</span>` : ''}
+                <div class="workflow-step-actions">
+                  <button class="form-btn form-btn-fill" type="button" data-workflow-expand="${escapeHtml(formId)}">Open</button>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function findFormDataInConversation(formId) {
+  for (const msg of state.conversation) {
+    if (!msg.visuals) continue;
+    for (const visual of msg.visuals) {
+      if (visual.kind === 'form-package' && visual.formData) {
+        const fd = visual.formData;
+        const id = fd.formId || fd.id || slugify(fd.formName || fd.name || '');
+        if (id === formId) return fd;
+      }
+      if (visual.kind === 'form-workflow' && visual.workflowData) {
+        const forms = visual.workflowData.forms || visual.workflowData.steps || [];
+        for (const f of forms) {
+          const id = f.formId || f.id || slugify(f.name || f.formName || '');
+          if (id === formId) return f;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function slugify(text) {
+  return String(text).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'form';
+}
+
+function collectInlineFormData(formId) {
+  const fields = document.querySelectorAll(`[data-form-field="${formId}"]`);
+  const collected = {};
+  for (const field of fields) {
+    const name = field.name || field.id || '';
+    if (name) collected[name] = field.value;
+  }
+  return collected;
+}
+
+// ─── End Form Package Rendering ─────────────────────────────────────
 
 function formatBytes(bytes) {
   if (!bytes) return '';
