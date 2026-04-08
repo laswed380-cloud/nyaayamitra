@@ -1,0 +1,8 @@
+.lexindia/
+.lexindia-test/
+node_modules/
+coverage/
+*.log
+.launchpad/
+.DS_Store
+Thumbs.db

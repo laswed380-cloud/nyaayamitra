@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>NyaayaMitra Launchpad</title>
+    <link rel="stylesheet" href="/chat.css">
+  </head>
+  <body>
+    <main id="app" aria-live="polite">
+      <section class="chat-page">
+        <section class="chat-shell">
+          <div class="chat-scroll" id="chat-scroll">
+            <article class="message assistant">
+              <div class="bubble typing">
+                <span></span><span></span><span></span>
+              </div>
+            </article>
+          </div>
+          <form class="composer">
+            <div class="composer-shell">
+              <button class="attach-button" type="button" aria-label="Attach files">+</button>
+              <textarea placeholder="Describe the business, paste an identifier, or upload the documents you already have."></textarea>
+              <button class="send-button" type="button">Send</button>
+            </div>
+          </form>
+        </section>
+      </section>
+    </main>
+    <script src="/chat.js"></script>
+  </body>
+</html>

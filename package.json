@@ -1,0 +1,25 @@
+{
+  "name": "nyaayamitra-launchpad",
+  "version": "0.1.0",
+  "private": true,
+  "description": "India-native company formation, launch compliance, DIN/DSC/KYC, office proof, and registration workflow workspace.",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node tests/run-tests.js"
+  },
+  "keywords": [
+    "company-formation",
+    "india",
+    "incorporation",
+    "dsc",
+    "din",
+    "kyc",
+    "compliance",
+    "launchpad"
+  ],
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20 <25"
+  }
+}
